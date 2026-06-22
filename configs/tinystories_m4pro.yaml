@@ -1,0 +1,49 @@
+# Data
+dataset: "roneneldan/TinyStories"
+max_seq_len: 128
+text_column: "text"
+val_split: 0.005
+streaming: false
+max_samples: null       # set to e.g. 10000 for quick tests
+
+# Tokenizer
+tokenizer_name: "bert-base-uncased"
+mask_token: "[MASK]"
+
+# Model (BERT-small-ish, ~30M params with d_model=384)
+model:
+  vocab_size: 30522
+  d_model: 384
+  num_layers: 6
+  num_heads: 6
+  d_ff: 1536
+  dropout: 0.1
+  max_seq_len: 128
+  tie_weights: true
+
+# Diffusion
+diffusion:
+  T: 1000
+  schedule: "cosine"      # cosine / linear / sqrt
+  inference_steps: 64
+  sampling_mode: "random"      # random (recommended) or confidence
+  temperature: 1.0
+  top_k: 40
+
+# Training
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 4
+  max_steps: 200000
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 2000
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"   # bf16 / fp16 / fp32
+  eval_every: 5000
+  save_every: 10000
+  num_workers: 4
+  seed: 42
+
+# Paths
+checkpoint_dir: "./checkpoints"

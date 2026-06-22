@@ -1,0 +1,44 @@
+# Memory test for the default model size on M4 Pro.
+dataset: "roneneldan/TinyStories"
+max_seq_len: 128
+text_column: "text"
+val_split: 0.1
+streaming: false
+max_samples: 1000
+
+tokenizer_name: "bert-base-uncased"
+mask_token: "[MASK]"
+
+model:
+  vocab_size: 30522
+  d_model: 384
+  num_layers: 6
+  num_heads: 6
+  d_ff: 1536
+  dropout: 0.1
+  max_seq_len: 128
+  tie_weights: true
+
+diffusion:
+  T: 1000
+  schedule: "cosine"
+  inference_steps: 16
+  sampling_mode: "confidence"
+  temperature: 1.0
+  top_k: 40
+
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 4
+  max_steps: 5
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 2
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  eval_every: 5
+  save_every: 5
+  num_workers: 4
+  seed: 42
+
+checkpoint_dir: "./checkpoints_memtest"

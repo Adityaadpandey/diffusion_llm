@@ -1,0 +1,26 @@
+[project]
+name = "diffusion-llm"
+version = "0.1.0"
+description = "Masked discrete diffusion language model on TinyStories"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "torch>=2.3",
+    "transformers>=4.40",
+    "datasets>=2.19",
+    "tokenizers>=0.19",
+    "accelerate>=0.30",
+    "tqdm>=4.66",
+    "pyyaml>=6.0",
+    "safetensors>=0.4",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "wandb>=0.17",
+    "matplotlib>=3.8",
+    "pytest>=8.0",
+]
+
+[tool.setuptools]
+py-modules = []

@@ -1,0 +1,44 @@
+# Quick test of the fixed loss on a subset.
+dataset: "roneneldan/TinyStories"
+max_seq_len: 128
+text_column: "text"
+val_split: 0.05
+streaming: false
+max_samples: 10000
+
+tokenizer_name: "bert-base-uncased"
+mask_token: "[MASK]"
+
+model:
+  vocab_size: 30522
+  d_model: 256
+  num_layers: 4
+  num_heads: 4
+  d_ff: 1024
+  dropout: 0.1
+  max_seq_len: 128
+  tie_weights: true
+
+diffusion:
+  T: 1000
+  schedule: "cosine"
+  inference_steps: 32
+  sampling_mode: "random"
+  temperature: 1.0
+  top_k: 40
+
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 2
+  max_steps: 1000
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 100
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  eval_every: 250
+  save_every: 1000
+  num_workers: 4
+  seed: 42
+
+checkpoint_dir: "./checkpoints_losstest"

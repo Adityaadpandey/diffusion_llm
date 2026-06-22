@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Checkpoints and logs
+checkpoints/
+checkpoints_*/
+*.log
+wandb/
+
+# Data cache
+cache/
+*.cache
