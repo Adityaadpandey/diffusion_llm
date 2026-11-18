@@ -20,6 +20,31 @@ from diffusion import diffusion_loss, get_schedule, sample
 from model import DiffusionTransformer
 
 
+def get_logger(config: dict):
+    """Return a wandb run object, or None if logging is disabled/unavailable."""
+    tcfg = config["training"]
+    if not tcfg.get("wandb", False):
+        return None
+    try:
+        import wandb
+    except ImportError:
+        print("wandb requested but not installed; skipping logging.")
+        return None
+    wandb.init(
+        project=tcfg.get("wandb_project", "diffusion-llm"),
+        name=tcfg.get("wandb_run_name", None),
+        config=config,
+    )
+    return wandb
+
+
+def ema_update(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
+    """In-place EMA: ema <- decay * ema + (1 - decay) * model."""
+    with torch.no_grad():
+        for ema_p, p in zip(ema_model.parameters(), model.parameters()):
+            ema_p.mul_(decay).add_(p, alpha=1.0 - decay)
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
@@ -78,6 +103,7 @@ def save_checkpoint(
     tokenizer,
     checkpoint_dir: str,
     is_best: bool = False,
+    ema_model: nn.Module | None = None,
 ) -> None:
     from safetensors.torch import save_model
 
@@ -89,6 +115,8 @@ def save_checkpoint(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     save_model(model, out_dir / "model.safetensors")
+    if ema_model is not None:
+        save_model(ema_model, out_dir / "ema.safetensors")
     torch.save(
         {
             "optimizer": optimizer.state_dict(),
@@ -110,11 +138,19 @@ def load_checkpoint(
     optimizer: optim.Optimizer | None = None,
     scheduler: LambdaLR | None = None,
     device: torch.device = torch.device("cpu"),
+    ema_model: nn.Module | None = None,
 ) -> int:
     from safetensors.torch import load_model
 
     ckpt_path = Path(checkpoint_dir)
     load_model(model, ckpt_path / "model.safetensors", device=str(device))
+
+    if ema_model is not None:
+        ema_path = ckpt_path / "ema.safetensors"
+        if ema_path.exists():
+            load_model(ema_model, ema_path, device=str(device))
+        else:
+            ema_model.load_state_dict(model.state_dict())
 
     training_path = ckpt_path / "training.pt"
     step = 0
@@ -129,6 +165,7 @@ def load_checkpoint(
 
 
 def evaluate(model: nn.Module, val_loader, config: dict, device: torch.device) -> float:
+    was_training = model.training
     model.eval()
     dcfg = config["diffusion"]
     T = dcfg["T"]
@@ -147,7 +184,7 @@ def evaluate(model: nn.Module, val_loader, config: dict, device: torch.device) -
             total_loss += loss.item() * info["num_masked"] * B
             total_tokens += info["num_masked"] * B
 
-    model.train()
+    model.train(was_training)
     return math.exp(total_loss / total_tokens) if total_tokens > 0 else float("inf")
 
 
@@ -192,10 +229,15 @@ def train(config: dict, resume_from: str | None = None) -> None:
         max_seq_len=config["max_seq_len"],
         val_split=config["val_split"],
         text_column=config["text_column"],
-        num_proc=config["training"].get("num_workers", 4),
+        num_proc=config["training"].get("tokenize_workers", 4),
         streaming=config.get("streaming", False),
         max_samples=config.get("max_samples", None),
     )
+    # Ensure the mask token exists (BPE tokenizers like gpt2 don't have one).
+    if config["mask_token"] not in tokenizer.get_vocab():
+        tokenizer.add_special_tokens({"mask_token": config["mask_token"]})
+    # Derive vocab size from the tokenizer so tokenizer swaps "just work".
+    config["model"]["vocab_size"] = len(tokenizer)
     mask_token_id = tokenizer.convert_tokens_to_ids(config["mask_token"])
     config["mask_token_id"] = mask_token_id
 
@@ -226,9 +268,19 @@ def train(config: dict, resume_from: str | None = None) -> None:
         tcfg["max_steps"],
     )
 
+    # EMA weights (used for evaluation/sampling) and optional wandb logging.
+    ema_decay = tcfg.get("ema_decay", 0.999)
+    ema_model = None
+    if ema_decay and ema_decay > 0:
+        ema_model = build_model(config, device)
+        ema_model.load_state_dict(model.state_dict())
+        ema_model.requires_grad_(False)
+        ema_model.eval()
+    wandb_logger = get_logger(config)
+
     start_step = 0
     if resume_from:
-        start_step = load_checkpoint(resume_from, model, optimizer, scheduler, device)
+        start_step = load_checkpoint(resume_from, model, optimizer, scheduler, device, ema_model)
         print(f"Resumed from step {start_step}")
 
     # AMP: MPS supports autocast but not GradScaler; CPU training is fp32 only here.
@@ -253,6 +305,7 @@ def train(config: dict, resume_from: str | None = None) -> None:
 
     step = start_step
     accum_loss = 0.0
+    best_val_ppl = float("inf")
     optimizer.zero_grad()
 
     pbar = tqdm(total=max_steps, initial=start_step, desc="Training")
@@ -282,24 +335,57 @@ def train(config: dict, resume_from: str | None = None) -> None:
             scheduler.step()
             optimizer.zero_grad()
 
+            if ema_model is not None:
+                ema_update(ema_model, model, ema_decay)
+
             lr = scheduler.get_last_lr()[0]
+            step_loss = accum_loss
+            accum_loss = 0.0
             pbar.update(grad_accum)
             pbar.set_postfix(
-                loss=f"{accum_loss:.4f}",
+                loss=f"{step_loss:.4f}",
                 lr=f"{lr:.2e}",
                 beta=f"{info['beta_mean']:.3f}",
                 masked=f"{info['num_masked']:.1f}",
             )
-            accum_loss = 0.0
 
-            # Evaluation
+            if wandb_logger is not None:
+                wandb_logger.log(
+                    {
+                        "train/loss": step_loss,
+                        "train/lr": lr,
+                        "train/beta": info["beta_mean"],
+                        "train/masked": info["num_masked"],
+                        "step": step + 1,
+                    }
+                )
+
+            # Evaluation (uses EMA weights when available)
             if (step + 1) % eval_every == 0 and val_loader is not None:
-                ppl = evaluate(model, val_loader, config, device)
+                eval_model = ema_model if ema_model is not None else model
+                ppl = evaluate(eval_model, val_loader, config, device)
                 print(f"\n[Step {step + 1}] Validation PPL: {ppl:.3f}")
-                samples = generate_samples(model, tokenizer, config, device)
+                samples = generate_samples(eval_model, tokenizer, config, device)
                 for i, s in enumerate(samples):
                     print(f"  Sample {i + 1}: {s[:200]}{'...' if len(s) > 200 else ''}")
                 model.train()
+
+                if wandb_logger is not None:
+                    wandb_logger.log({"val/ppl": ppl, "step": step + 1})
+
+                if ppl < best_val_ppl:
+                    best_val_ppl = ppl
+                    save_checkpoint(
+                        model,
+                        optimizer,
+                        scheduler,
+                        step + 1,
+                        config,
+                        tokenizer,
+                        config["checkpoint_dir"],
+                        is_best=True,
+                        ema_model=ema_model,
+                    )
 
             # Checkpointing
             if (step + 1) % save_every == 0:
@@ -311,6 +397,7 @@ def train(config: dict, resume_from: str | None = None) -> None:
                     config,
                     tokenizer,
                     config["checkpoint_dir"],
+                    ema_model=ema_model,
                 )
 
         step += 1
@@ -324,7 +411,10 @@ def train(config: dict, resume_from: str | None = None) -> None:
         config,
         tokenizer,
         config["checkpoint_dir"],
+        ema_model=ema_model,
     )
+    if wandb_logger is not None:
+        wandb_logger.finish()
     pbar.close()
 
 
