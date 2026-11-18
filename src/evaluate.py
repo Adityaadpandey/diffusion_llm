@@ -11,7 +11,7 @@ from transformers import AutoTokenizer
 
 from data import build_dataset, get_dataloaders
 from diffusion import diffusion_loss, get_schedule
-from model import DiffusionTransformer
+from model import build_diffusion_model, detect_arch
 from train import get_device, load_checkpoint
 
 
@@ -20,7 +20,9 @@ def evaluate(config: dict, checkpoint_dir: str, device: torch.device) -> float:
     mask_token_id = tokenizer.convert_tokens_to_ids(config["mask_token"])
     config["mask_token_id"] = mask_token_id
 
-    model = DiffusionTransformer(**config["model"])
+    # Old checkpoints use the legacy layout, new ones use adaLN; pick by tensor names.
+    arch = detect_arch(f"{checkpoint_dir}/model.safetensors")
+    model = build_diffusion_model(config["model"], arch=arch)
     model.to(device)
     load_checkpoint(checkpoint_dir, model, device=device)
     model.eval()

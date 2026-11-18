@@ -9,7 +9,7 @@ import yaml
 from transformers import AutoTokenizer
 
 from diffusion import sample
-from model import DiffusionTransformer
+from model import build_diffusion_model, detect_arch
 from train import get_device, load_checkpoint
 
 
@@ -52,7 +52,9 @@ def main() -> None:
     if args.mode is not None:
         config["diffusion"]["sampling_mode"] = args.mode
 
-    model = DiffusionTransformer(**config["model"])
+    arch = detect_arch(f"{ckpt_path}/model.safetensors")
+    print(f"Detected architecture: {arch}")
+    model = build_diffusion_model(config["model"], arch=arch)
     model.to(device)
     load_checkpoint(ckpt_path, model, device=device)
     model.eval()
