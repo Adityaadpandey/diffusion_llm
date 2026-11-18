@@ -22,10 +22,10 @@ model:
 diffusion:
   T: 100
   schedule: "cosine"
-  inference_steps: 32
-  sampling_mode: "random"
-  temperature: 0.7      # slightly lower for cleaner output
-  top_k: 50             # slightly higher for more variety
+  inference_steps: 64           # more steps -> smoother confidence-based unmasking
+  sampling_mode: "confidence"   # commit high-confidence positions first (coherent + diverse)
+  temperature: 0.8
+  top_k: 50
 
 training:
   batch_size: 32
@@ -38,7 +38,8 @@ training:
   mixed_precision: "bf16"
   eval_every: 2500
   save_every: 5000
-  num_workers: 4        # used for tokenization; set to 0 if MPS/dataloader unstable
+  num_workers: 0        # dataloader workers: 0 avoids MPS semaphore leaks/crashes
+  tokenize_workers: 4   # one-time parallel tokenization (cached afterwards)
   seed: 42
 
 checkpoint_dir: "./checkpoints_ultimate"

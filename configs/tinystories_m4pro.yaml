@@ -40,6 +40,10 @@ training:
   warmup_steps: 2000
   max_grad_norm: 1.0
   mixed_precision: "bf16"   # bf16 / fp16 / fp32
+  ema_decay: 0.999          # exponential moving average for eval/sampling (0 disables)
+  wandb: false              # set true to log to Weights & Biases
+  wandb_project: "diffusion-llm"
+  wandb_run_name: null
   eval_every: 5000
   save_every: 10000
   num_workers: 4

@@ -1,0 +1,50 @@
+# Shortened rope_bpe run for a few-hour budget: same model, 20k steps.
+dataset: "roneneldan/TinyStories"
+max_seq_len: 128
+text_column: "text"
+val_split: 0.005
+streaming: false
+max_samples: null
+
+tokenizer_name: "gpt2"
+mask_token: "[MASK]"
+
+model:
+  vocab_size: 50257      # auto-derived from tokenizer at runtime, kept for reference
+  d_model: 512
+  num_layers: 8
+  num_heads: 8
+  d_ff: 2048
+  dropout: 0.1
+  max_seq_len: 128
+  tie_weights: true
+  use_rope: true
+  rotary_max_seq_len: 2048
+
+diffusion:
+  T: 100
+  schedule: "cosine"
+  inference_steps: 32
+  sampling_mode: "random"
+  temperature: 1.0
+  top_k: 40
+
+training:
+  batch_size: 24
+  gradient_accumulation_steps: 6
+  max_steps: 20000
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  ema_decay: 0.999
+  wandb: false
+  wandb_project: "diffusion-llm"
+  wandb_run_name: null
+  eval_every: 2000
+  save_every: 2000
+  num_workers: 4
+  seed: 42
+
+checkpoint_dir: "./checkpoints_rope_bpe_short"
