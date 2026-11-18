@@ -1,4 +1,9 @@
-"""TinyStories dataset loading and tokenization with sequence packing."""
+"""TinyStories dataset loading and tokenization with sequence packing.
+
+Supports both BERT-style WordPiece (default) and GPT-2/LLaMA byte-level BPE
+tokenizers. BPE tokenizes text into subword units that map better onto open-ended
+generation, which usually produces noticeably better samples than WordPiece.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,8 @@ from transformers import AutoTokenizer
 
 def load_tokenizer(tokenizer_name: str = "bert-base-uncased"):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
 
 
@@ -31,7 +38,8 @@ def build_dataset(
 
     Args:
         dataset_name: HuggingFace dataset identifier.
-        tokenizer_name: HuggingFace tokenizer identifier.
+        tokenizer_name: HuggingFace tokenizer identifier. Use a BPE tokenizer such
+            as "gpt2" for open-ended generation quality.
         max_seq_len: chunk length in tokens.
         val_split: fraction held out for validation.
         text_column: column containing raw text.
@@ -41,6 +49,11 @@ def build_dataset(
         train_dataset, val_dataset, tokenizer
     """
     tokenizer = load_tokenizer(tokenizer_name)
+
+    # BPE tokenizers are append-only when truncating from the right: the EOS
+    # token, if present, is preserved. WordPiece tokenizers get a separator.
+    append_eos = tokenizer.eos_token is not None and tokenizer.eos_token != ""
+    sep = None if append_eos else tokenizer.sep_token
 
     if streaming:
         raw = load_dataset(dataset_name, split="train", streaming=True, cache_dir=cache_dir)
@@ -54,7 +67,8 @@ def build_dataset(
                 truncation=True,
                 max_length=max_seq_len,
             )["input_ids"]
-            ids = ids + [tokenizer.pad_token_id] * (max_seq_len - len(ids))
+            pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+            ids = ids + [pad_id] * (max_seq_len - len(ids))
             return {"input_ids": ids[:max_seq_len]}
 
         packed = raw.map(tokenize_and_pad, remove_columns=raw.column_names)
@@ -69,8 +83,11 @@ def build_dataset(
             raw = raw.select(range(min(max_samples, len(raw))))
 
         def tokenize_batch(batch):
+            texts = batch[text_column]
+            if sep is not None:
+                texts = [text + sep for text in texts]
             return tokenizer(
-                [text + tokenizer.sep_token for text in batch[text_column]],
+                texts,
                 add_special_tokens=False,
                 truncation=True,
                 max_length=max_seq_len,
