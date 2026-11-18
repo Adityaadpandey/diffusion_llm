@@ -111,9 +111,10 @@ def diffusion_loss(
         reduction="none",
     ).view(B, L)
 
-    # Train on all positions. Unmasked positions are already x0, so this
-    # also teaches the model to copy known tokens, which stabilizes early
-    # training and improves generation quality.
+    # Train on all positions. Unmasked positions are already x0, so this also
+    # teaches the model to copy known tokens, which stabilizes early training
+    # and improves generation quality (this is the recipe that produced the
+    # `checkpoints_fast` run reaching validation PPL ~3.8).
     loss = ce.mean()
 
     num_masked = mask.float().sum(dim=1)
@@ -181,33 +182,37 @@ def reverse_step_random(
 def reverse_step_confidence(
     model_probs: torch.Tensor,
     xt: torch.Tensor,
-    unmask_fraction: float,
+    n_unmask: int,
     mask_token_id: int,
 ) -> torch.Tensor:
-    """Unmask the most confident `unmask_fraction` of currently masked tokens.
+    """Commit the `n_unmask` most-confident currently-masked positions.
 
-    Already-unmasked positions are left untouched.
+    Already-unmasked positions are left untouched. `n_unmask` is an absolute
+    count (computed by the caller from the reveal schedule) so that the whole
+    sequence is guaranteed to be filled by the final step.
     """
     B, L, V = model_probs.shape
 
-    confidence, tokens = model_probs.max(dim=-1)  # (B, L)
+    # Rank positions by the model's confidence (max prob), but SAMPLE the token
+    # we commit so that different runs produce different stories. Using argmax
+    # here would make every sample identical.
+    confidence = model_probs.max(dim=-1).values  # (B, L)
+    sampled = torch.multinomial(model_probs.view(B * L, V), num_samples=1).view(B, L)
     masked = xt == mask_token_id
 
     # Never touch unmasked positions.
     confidence = confidence.clone()
     confidence[~masked] = -float("inf")
 
-    n_masked = masked.sum().item()
-    n_unmask = max(1, int(n_masked * unmask_fraction))
-    if n_unmask >= n_masked:
-        n_unmask = n_masked
+    n_masked = int(masked.sum().item())
+    n_unmask = min(max(n_unmask, 0), n_masked)
 
     x_prev = xt.clone().view(-1)
     if n_unmask > 0:
         flat_conf = confidence.view(-1)
         _, top_idx = flat_conf.topk(n_unmask, largest=True)
-        flat_tokens = tokens.view(-1)
-        x_prev[top_idx] = flat_tokens[top_idx]
+        flat_sampled = sampled.view(-1)
+        x_prev[top_idx] = flat_sampled[top_idx]
 
     return x_prev.view(B, L)
 
@@ -258,6 +263,16 @@ def sample(
     # Reverse schedule: e.g. [1000, 985, ..., 1]
     timesteps = torch.linspace(T, 1, inference_steps).long().tolist()
 
+    # For confidence mode we drive an explicit reveal schedule so the whole
+    # sequence is guaranteed filled by the last step. Cosine schedule keeps many
+    # tokens masked early (when the model is unsure) and reveals fast near the end.
+    n_to_fill = int((x == mask_token_id).sum().item())
+
+    def remaining_masked(step_idx: int) -> int:
+        # Fraction still masked after step `step_idx` (0-indexed), cosine-shaped.
+        frac = math.cos((math.pi / 2.0) * (step_idx + 1) / inference_steps)
+        return int(round(n_to_fill * max(frac, 0.0)))
+
     for i, t in enumerate(timesteps):
         t_tensor = torch.tensor([t], device=device)
         logits = model(x, t_tensor)  # (1, L, V)
@@ -269,8 +284,11 @@ def sample(
             t_prev = timesteps[i + 1] if i + 1 < len(timesteps) else 0
             x = reverse_step_random(probs, x, t, t_prev, mask_token_id, schedule_fn, T)
         else:
-            # Confidence: unmask a fraction each step.
-            unmask_fraction = 1.0 / inference_steps
-            x = reverse_step_confidence(probs, x, unmask_fraction, mask_token_id)
+            # Reveal enough tokens to hit the target remaining-masked count,
+            # forcing everything filled on the final step.
+            target_remaining = 0 if i == len(timesteps) - 1 else remaining_masked(i)
+            currently_masked = int((x == mask_token_id).sum().item())
+            n_unmask = max(currently_masked - target_remaining, 1 if currently_masked > 0 else 0)
+            x = reverse_step_confidence(probs, x, n_unmask, mask_token_id)
 
     return x
