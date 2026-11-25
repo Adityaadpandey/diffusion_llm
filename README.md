@@ -218,6 +218,9 @@ A detail worth knowing: `step` in the loop counts micro-batches, but the LR sche
 | `tinystories_rope_bpe` | 64.6M | adaLN + RoPE, GPT-2 BPE tokenizer, EMA | Not trained. Has a wiring bug, see limitations |
 | `tinystories_ultimate` | 153.4M | d_model 768, 12 layers, 75k steps, `confidence` mode | Started, stopped at ~step 72. About 1 s per micro-batch, projected ~20 h. No checkpoint |
 | `tinystories_m4pro` | 28.3M (adaLN build) | Default for `train.py`, 200k steps, EMA on | Not run to completion |
+| `tinystories_ablation_masked` | 41.2M (legacy) | Same recipe as `fast` but the loss is averaged over masked positions only. 15k micro-batches | Not run yet |
+| `tinystories_control_all` | 41.2M (legacy) | `fast` recipe rerun on the current code for 15k micro-batches, to check the ablation is not a code-version effect | Not run yet |
+| `tinystories_ar` | 40.9M | Autoregressive baseline (`src/ar_baseline.py`), same data, size and recipe | Not run yet |
 | `*_test`, `memory_test` | various | Short experiments used while debugging | Throwaway |
 
 ---
@@ -291,8 +294,8 @@ Roughly ordered by how much each one matters.
 2. **Parallel sampling makes inconsistent choices.** With 32 steps over 128 tokens, about 4 tokens get committed per step, each drawn without seeing the others. That produces doubled words and contradictory neighbours. More steps help and cost proportionally more time. I did not measure how quality scales with steps.
 3. **The 128-token window is hard.** The legacy model has a learned position table of exactly 128 rows. Every story is a fixed 128-token chunk, so generated text starts and ends mid-thought, and stories are not separated by an explicit end token in the sampled output.
 4. **Tokenizer damage.** BERT WordPiece lowercases and decodes with stray spaces (`i can ' t`, `" hello "`). The GPT-2 BPE config exists to fix that and is untested.
-5. **The RoPE config does not do what it says.** `src/train.py:build_model` builds `DiffusionTransformer` without passing `use_rope` or `rotary_max_seq_len`. Training from `tinystories_rope_bpe.yaml` therefore builds the learned-position model, but saves a `config.yaml` that says `use_rope: true`. Loading that checkpoint in `sample.py` (which does pass the full model config) would then build a different model than the one trained. Fix is a two-line change, not made yet.
-6. **The LR schedule never decays** in practice (see training setup). Final loss is probably higher than a properly decayed run would get.
+5. **RoPE wiring (fixed).** `build_model` used to drop `use_rope` and `rotary_max_seq_len`, so a RoPE config trained the learned-position model but saved a config that said RoPE. It now passes both through. The reference run used the legacy architecture and was not affected.
+6. **LR schedule units (fixed).** The loop counts micro-batches but the scheduler ticks once per optimizer update, so the reference run's 2,000 warmup steps lasted 12,000 micro-batches and cosine decay barely started (final lr 2.89e-4). Warmup and decay lengths are now converted to updates. The reference run itself was trained with the old behaviour. To reproduce its lr curve on the current code use `warmup_steps: 12000` and `lr_schedule_steps: 300000`, which is what the ablation and baseline configs do.
 7. **The metric is weak.** See the perplexity note. There are no downstream benchmarks, no human ratings, no repetition or diversity scores, and no comparison against an autoregressive model of the same size on the same data. I cannot claim this beats or matches one.
 8. **No speed win demonstrated.** In theory 32 passes beat 128 sequential ones. In this code every pass recomputes attention for the full sequence with no caching, and I have not timed generation against an autoregressive baseline. Do not read the table at the top as a measured speedup.
 9. **`evaluate.py` is unverified on the legacy checkpoint.** It selects the architecture with `detect_arch` like `sample.py` does, but I have not run it end to end against `checkpoints_fast/step_0050000`.
@@ -313,12 +316,12 @@ Honest framing first: nothing in this repo proves diffusion LMs will replace aut
 
 Concrete next steps for this project, in the order I would do them:
 
-1. Fix the two bugs (RoPE wiring, LR schedule units) and commit them separately.
-2. Run the missing ablation: all-position vs masked-only loss at the same T, so the "what fixed training" question has a real answer.
+1. ~~Fix the two bugs (RoPE wiring, LR schedule units)~~ Done.
+2. Run the missing ablation (`tinystories_ablation_masked` plus the `tinystories_control_all` control): all-position vs masked-only loss at the same T, so the "what fixed training" question has a real answer.
 3. Report a masked-token-only loss alongside the current number, so the metric means something.
 4. Train `tinystories_rope_bpe` to completion and compare samples against `fast` with the same seeds. This tests the tokenizer fix and the adaLN architecture.
 5. Measure quality against `--steps` (8, 16, 32, 64, 128) with a repetition and distinct-n-gram score.
-6. Train a small autoregressive baseline with the same parameter count and token budget. Without it, none of the above says anything about diffusion versus autoregression.
+6. Train the autoregressive baseline (`tinystories_ar`) with the same parameter count and token budget. Without it, none of the above says anything about diffusion versus autoregression.
 7. Try remasking samplers and a learned or confidence-based unmasking order that avoids committing conflicting neighbours in the same step.
 8. Only then consider the 153M `ultimate` run, which needs roughly a day on this machine.
 
