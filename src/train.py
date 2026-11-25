@@ -189,7 +189,9 @@ def evaluate(model: nn.Module, val_loader, config: dict, device: torch.device) -
             x0 = x0.to(device)
             B = x0.size(0)
             t = torch.randint(1, T + 1, (B,), device=device)
-            loss, info = diffusion_loss(model, x0, t, mask_token_id, schedule_fn, T)
+            loss, info = diffusion_loss(
+                model, x0, t, mask_token_id, schedule_fn, T, dcfg.get("loss_mode", "all")
+            )
             total_loss += loss.item() * info["num_masked"] * B
             total_tokens += info["num_masked"] * B
 
@@ -338,7 +340,9 @@ def train(config: dict, resume_from: str | None = None) -> None:
         t = torch.randint(1, T + 1, (B,), device=device)
 
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            loss, info = diffusion_loss(model, x0, t, mask_token_id, schedule_fn, T)
+            loss, info = diffusion_loss(
+                model, x0, t, mask_token_id, schedule_fn, T, dcfg.get("loss_mode", "all")
+            )
             loss = loss / grad_accum
 
         loss.backward()

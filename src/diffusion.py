@@ -91,13 +91,21 @@ def diffusion_loss(
     mask_token_id: int,
     schedule_fn: Callable[[torch.Tensor, int], torch.Tensor],
     T: int,
+    loss_mode: str = "all",
 ) -> tuple[torch.Tensor, dict]:
-    """ELBO-based training loss: weighted CE on masked positions.
+    """Cross-entropy training loss for the denoiser.
+
+    This is NOT the weighted ELBO from the MDLM paper. Two plain variants:
+      "all"    mean CE over every position (the reference run). Visible tokens
+               are easy copies, so they pull the average down and also teach
+               the model to leave known tokens alone.
+      "masked" mean CE over masked positions only (used for the ablation).
 
     Args:
         model: predicts logits (B, L, V).
         x0: clean token ids (B, L).
         t: timesteps (B,) in [1, T].
+        loss_mode: "all" or "masked".
     Returns:
         loss scalar and info dict.
     """
@@ -111,11 +119,12 @@ def diffusion_loss(
         reduction="none",
     ).view(B, L)
 
-    # Train on all positions. Unmasked positions are already x0, so this also
-    # teaches the model to copy known tokens, which stabilizes early training
-    # and improves generation quality (this is the recipe that produced the
-    # `checkpoints_fast` run reaching validation PPL ~3.8).
-    loss = ce.mean()
+    if loss_mode == "all":
+        loss = ce.mean()
+    elif loss_mode == "masked":
+        loss = (ce * mask).sum() / mask.sum().clamp(min=1)
+    else:
+        raise ValueError(f"Unknown loss_mode {loss_mode}. Choose 'all' or 'masked'.")
 
     num_masked = mask.float().sum(dim=1)
     info = {
