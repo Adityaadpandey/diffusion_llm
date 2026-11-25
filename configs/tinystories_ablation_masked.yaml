@@ -1,0 +1,52 @@
+# Loss ablation: identical to tinystories_fast.yaml except the loss is averaged
+# over masked positions only. Runs the legacy architecture so the network is the
+# same one the reference run used. Stops at 15k micro-batches (about 1.1 h) but
+# follows the lr curve of the full 50k-micro-batch reference (lr_schedule_steps).
+dataset: "roneneldan/TinyStories"
+max_seq_len: 128
+text_column: "text"
+val_split: 0.005
+streaming: false
+max_samples: null
+
+tokenizer_name: "bert-base-uncased"
+mask_token: "[MASK]"
+
+arch: legacy
+
+model:
+  vocab_size: 30522
+  d_model: 512
+  num_layers: 8
+  num_heads: 8
+  d_ff: 2048
+  dropout: 0.1
+  max_seq_len: 128
+  tie_weights: true
+
+diffusion:
+  T: 100
+  schedule: "cosine"
+  loss_mode: "masked"
+  inference_steps: 32
+  sampling_mode: "random"
+  temperature: 1.0
+  top_k: 40
+
+training:
+  batch_size: 24
+  gradient_accumulation_steps: 6
+  max_steps: 15000
+  lr_schedule_steps: 300000   # 50k updates * 6, the reference run's schedule
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 12000         # 2000 updates * 6, the reference run's warmup
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  ema_decay: 0                # the reference run had no EMA
+  eval_every: 2500
+  save_every: 5000
+  num_workers: 4
+  seed: 42
+
+checkpoint_dir: "./checkpoints_ablation_masked"
