@@ -213,15 +213,15 @@ def reverse_step_confidence(
     confidence = confidence.clone()
     confidence[~masked] = -float("inf")
 
-    n_masked = int(masked.sum().item())
+    # Every row has the same number of masked slots (same prompt), so one k works
+    # for the whole batch. With B=1 this is the original behaviour.
+    n_masked = int(masked.sum(dim=1).min().item())
     n_unmask = min(max(n_unmask, 0), n_masked)
 
-    x_prev = xt.clone().view(-1)
+    x_prev = xt.clone()
     if n_unmask > 0:
-        flat_conf = confidence.view(-1)
-        _, top_idx = flat_conf.topk(n_unmask, largest=True)
-        flat_sampled = sampled.view(-1)
-        x_prev[top_idx] = flat_sampled[top_idx]
+        _, top_idx = confidence.topk(n_unmask, dim=1, largest=True)
+        x_prev.scatter_(1, top_idx, sampled.gather(1, top_idx))
 
     return x_prev.view(B, L)
 
@@ -239,8 +239,10 @@ def sample(
     top_k: int = 0,
     device: torch.device | str = "cpu",
     prompt_ids: torch.Tensor | None = None,
+    num_samples: int = 1,
+    timestep_mode: Literal["linear", "even_beta"] = "linear",
 ) -> torch.Tensor:
-    """Generate a sequence from fully masked (or partially prompted) state.
+    """Generate sequences from a fully masked (or partially prompted) state.
 
     Args:
         model: trained diffusion model.
@@ -254,28 +256,41 @@ def sample(
         top_k: top-k filtering (0 disables).
         device: torch device.
         prompt_ids: optional (1, P) tensor of token ids to keep fixed at start.
+        num_samples: how many sequences to generate in parallel.
+        timestep_mode: "linear" walks evenly spaced timesteps (the original
+            behaviour, which reveals most tokens in the first steps because the
+            cosine schedule is steepest there). "even_beta" picks timesteps so
+            the masking rate drops by the same amount every step, which reveals
+            about seq_len / inference_steps tokens per step.
     Returns:
-        generated token ids (1, seq_len).
+        generated token ids (num_samples, seq_len).
     """
     model.eval()
     schedule_fn = get_schedule(schedule_name)
 
-    x = torch.full((1, seq_len), mask_token_id, dtype=torch.long, device=device)
+    x = torch.full((num_samples, seq_len), mask_token_id, dtype=torch.long, device=device)
     if prompt_ids is not None:
         prompt_ids = prompt_ids.to(device)
         p_len = prompt_ids.size(1)
         if p_len > seq_len:
             prompt_ids = prompt_ids[:, :seq_len]
             p_len = seq_len
-        x[:, :p_len] = prompt_ids
+        x[:, :p_len] = prompt_ids.expand(num_samples, -1)
 
     # Reverse schedule: e.g. [1000, 985, ..., 1]
-    timesteps = torch.linspace(T, 1, inference_steps).long().tolist()
+    if timestep_mode == "even_beta":
+        grid = torch.arange(1, T + 1, device=device)
+        betas = schedule_fn(grid, T)
+        targets = 1.0 - torch.arange(inference_steps, device=device) / inference_steps
+        picked = [int(grid[(betas - b).abs().argmin()]) for b in targets]
+        timesteps = list(dict.fromkeys(picked))  # drop repeats when steps > T
+    else:
+        timesteps = torch.linspace(T, 1, inference_steps).long().tolist()
 
     # For confidence mode we drive an explicit reveal schedule so the whole
     # sequence is guaranteed filled by the last step. Cosine schedule keeps many
     # tokens masked early (when the model is unsure) and reveals fast near the end.
-    n_to_fill = int((x == mask_token_id).sum().item())
+    n_to_fill = int((x[0] == mask_token_id).sum().item())
 
     def remaining_masked(step_idx: int) -> int:
         # Fraction still masked after step `step_idx` (0-indexed), cosine-shaped.
@@ -283,7 +298,7 @@ def sample(
         return int(round(n_to_fill * max(frac, 0.0)))
 
     for i, t in enumerate(timesteps):
-        t_tensor = torch.tensor([t], device=device)
+        t_tensor = torch.full((num_samples,), t, device=device)
         logits = model(x, t_tensor)  # (1, L, V)
         logits = logits / temperature
         logits = top_k_filter(logits, top_k)
@@ -296,7 +311,7 @@ def sample(
             # Reveal enough tokens to hit the target remaining-masked count,
             # forcing everything filled on the final step.
             target_remaining = 0 if i == len(timesteps) - 1 else remaining_masked(i)
-            currently_masked = int((x == mask_token_id).sum().item())
+            currently_masked = int((x[0] == mask_token_id).sum().item())
             n_unmask = max(currently_masked - target_remaining, 1 if currently_masked > 0 else 0)
             x = reverse_step_confidence(probs, x, n_unmask, mask_token_id)
 
