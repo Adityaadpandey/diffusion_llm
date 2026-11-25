@@ -10,7 +10,7 @@
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.16}
 \usepackage[colorlinks=true,linkcolor=black,citecolor=black,urlcolor=black,
-            pdftitle={Training a Masked Diffusion Language Model on a Single Laptop},
+            pdftitle={Masked Diffusion Language Modeling at Laptop Scale: What Trains and What Breaks},
             pdfauthor={Aditya Dutt Pandey}]{hyperref}
 
 \lstset{basicstyle=\ttfamily\scriptsize, breaklines=true, frame=single,
@@ -22,7 +22,7 @@
 
 \begin{document}
 
-\title{Training a Masked Diffusion Language Model\\on a Single Laptop}
+\title{Masked Diffusion Language Modeling at Laptop Scale:\\What Trains and What Breaks}
 
 \author{\IEEEauthorblockN{Aditya Dutt Pandey}
 \IEEEauthorblockA{GitHub: Adityaadpandey\\
@@ -31,160 +31,119 @@
 \maketitle
 
 \begin{abstract}
-This paper describes a small masked diffusion language model that was
-implemented from scratch and trained on the TinyStories corpus using one
-Apple M4 Pro laptop. The model starts from a fully masked sequence and fills it
-in over a few dozen denoising passes instead of decoding left to right. The
-reference model has 41.2M parameters and trains in 3 h 41 min. It reproduces the
-style of the corpus, including character names, short sentences and quoted
-dialogue, but it does not sustain a plot beyond a sentence or two. Two of three
-full runs failed to learn beyond unigram statistics. The third trained normally
-after the loss and the diffusion horizon were changed together; because the
-ablation separating the two changes was not run, the cause is reported as a
-hypothesis. The paper also documents a validation metric that overstates model
-quality and three defects found in the implementation.
+Masked diffusion language models generate text by filling in a fully masked
+sequence over several parallel passes. We built one from scratch and trained
+it on TinyStories on a single Apple M4 Pro laptop (41.2M parameters, 3 h 41 min).
+It learns the style of the corpus but loses the plot after a sentence or two.
+The more useful results are about why. First, two of three training runs stalled
+at unigram-level quality; the run that worked changed the loss and the number
+of diffusion steps together, and we show that the second change barely alters
+the corruption distribution, which points to the loss as the cause. Second, the
+sampler's default timestep list reveals about 20\% of the sequence in its first
+four of 32 steps, when the model has the least context, and under 2\% in its
+last four; this front-loading is consistent with the repeated words and
+restarts in the samples. Third, the validation score we monitored overstates
+quality by roughly an order of magnitude. We report these findings together
+with the implementation defects we found, and we mark which claims were tested
+and which are hypotheses.
 \end{abstract}
 
 \begin{IEEEkeywords}
-masked diffusion, discrete diffusion, language modeling, TinyStories,
-parallel decoding, small-scale training
+masked diffusion, discrete diffusion, language modeling, parallel decoding,
+TinyStories
 \end{IEEEkeywords}
 
 \section{Introduction}
 
-Autoregressive transformers generate text in one direction: token $n$ is chosen
-given tokens $1,\dots,n-1$. The approach is simple and works well, but it
-imposes three constraints. Producing $L$ tokens takes $L$ sequential forward
-passes, a token cannot be revised once written, and conditioning on text that
-lies to the right of a position requires additional training or prompting
-tricks.
+An autoregressive model writes token $n$ after seeing tokens $1,\dots,n-1$.
+That is simple and effective, but producing $L$ tokens needs $L$ sequential
+passes, a written token is never revised, and infilling needs extra machinery.
+Masked diffusion language models drop the ordering
+\cite{austin2021d3pm,sahoo2024mdlm,lou2024sedd}: a bidirectional transformer
+learns to restore text whose tokens were randomly replaced by \mask{}, at every
+corruption level, and generation runs it repeatedly from an all-\mask{} start.
+At 8B parameters this has been reported to rival autoregressive models of
+similar size \cite{nie2025llada}.
 
-Masked diffusion language models remove the left-to-right order
-\cite{austin2021d3pm,sahoo2024mdlm,lou2024sedd}. A bidirectional transformer is
-trained on text in which a random subset of tokens has been replaced by a
-\mask{} symbol, at every corruption level from nearly clean to fully masked.
-Generation starts from all \mask{} and applies the model repeatedly, committing
-some tokens at each pass. At the 8B scale this approach has been reported to be
-competitive with autoregressive models of similar size \cite{nie2025llada}.
+Most of that evidence comes from large models and large compute. Whether the
+recipe survives at a scale one person can afford, and what goes wrong when it
+does not, is less documented. This paper is a case study at that scale. We
+implement the full pipeline in about 1,500 lines of PyTorch and train on a
+laptop. We then look closely at three things that were not obvious beforehand:
+why some runs trained and others did not (Section~\ref{sec:train}), how the
+sampler distributes work across steps (Section~\ref{sec:sampling}), and what
+the validation number we were watching actually measures
+(Section~\ref{sec:metric}). The scope is deliberately narrow, and we state
+throughout what was measured and what was only inferred.
 
-This work asks how much of that behaviour survives at a very small scale, on one
-consumer machine and without cloud compute. No new method is proposed. The
-contributions are:
-\begin{itemize}
-\item a compact PyTorch implementation of masked diffusion for text with two
-      denoiser architectures and two samplers;
-\item a 41.2M-parameter model trained on TinyStories in under four hours,
-      with its validation curve and samples;
-\item a record of two failed runs and of the change that fixed training; and
-\item an account of the weaknesses of the evaluation metric and of three
-      implementation defects.
-\end{itemize}
+\section{Background}
 
-\section{Related Work}
-
-D3PM \cite{austin2021d3pm} extended diffusion to discrete data and introduced
-corruption into an absorbing \mask{} state. SEDD \cite{lou2024sedd} trains by
-estimating ratios of the data distribution. MDLM \cite{sahoo2024mdlm} showed
-that a simple masked objective with a good training recipe is competitive among
-diffusion language models, and LLaDA \cite{nie2025llada} scaled it to 8B
-parameters. Diffusion-LM \cite{li2022diffusionlm} instead diffuses in a
-continuous embedding space.
-
-Committing the most confident predictions first and leaving the rest masked
-comes from MaskGIT \cite{chang2022maskgit} for images and Mask-Predict
-\cite{ghazvininejad2019maskpredict} for translation. The denoiser is an
-encoder-only transformer \cite{vaswani2017attention,devlin2019bert}. One of the
-two implemented variants conditions on the timestep with adaLN-Zero
-\cite{peebles2023dit} and uses rotary position embeddings
+D3PM \cite{austin2021d3pm} introduced discrete diffusion with an absorbing
+\mask{} state, SEDD \cite{lou2024sedd} estimates data-distribution ratios, and
+MDLM \cite{sahoo2024mdlm} showed that a simple masked objective with a good
+recipe is competitive among diffusion language models. LLaDA
+\cite{nie2025llada} scaled it to 8B parameters, while Diffusion-LM
+\cite{li2022diffusionlm} diffuses in continuous embedding space. Committing
+confident predictions first and leaving the rest masked comes from MaskGIT
+\cite{chang2022maskgit} and Mask-Predict \cite{ghazvininejad2019maskpredict}.
+The denoiser is an encoder-only transformer
+\cite{vaswani2017attention,devlin2019bert}; one of our two variants adds the
+timestep via adaLN-Zero \cite{peebles2023dit} and uses rotary embeddings
 \cite{su2021roformer}. The data is TinyStories \cite{eldan2023tinystories}, a
-synthetic corpus of short stories with a toddler-level vocabulary. None of these
-ideas originate here. The implementation, training configurations, experimental
-record and analysis are the work of this paper.
+synthetic corpus of short stories with a toddler-level vocabulary. None of
+these ideas are ours; the implementation, configurations, experimental record
+and analysis are.
 
-\section{Method}
+\section{Model and Setup}
 
-\subsection{Forward Corruption Process}
+\subsection{Corruption and objective}
 
-Let $\xzero$ be a sequence of $L$ token ids and $t\in\{1,\dots,T\}$ a timestep.
-A schedule maps $t$ to a masking probability $\beta(t)$, and each token is
-independently replaced by \mask{} with that probability. The reference run uses
-the cosine schedule with $T=100$:
+For a clean sequence $\xzero$ of $L$ tokens and a timestep $t\in\{1,\dots,T\}$,
+each token is independently replaced by \mask{} with probability
 \begin{equation}
-  \beta(t)=1-\cos\!\Big(\frac{t}{T}\cdot\frac{\pi}{2}\Big).
+  \beta(t)=1-\cos\!\Big(\frac{t}{T}\cdot\frac{\pi}{2}\Big)
 \end{equation}
-Linear and square-root schedules are also implemented. With $t$ uniform, the
-mean masking rate is $1-2/\pi\approx0.363$, which matters for the metric
-discussed in Section~\ref{sec:metric}.
-
-\subsection{Denoiser}
-
-The model $p_\theta(\xzero\mid\xt,t)$ outputs a distribution over the
-vocabulary at every position. Attention is bidirectional (no causal mask) and
-the output projection is tied to the token embedding. The repository contains
-two architectures, distinguished at load time from the tensor names in the
-checkpoint.
-
-The \emph{legacy} architecture produced all reported results. Its input is the
-sum of a token embedding, a learned position embedding and a projected
-sinusoidal timestep embedding, followed by $N$ pre-LayerNorm encoder blocks and
-a final LayerNorm. The noise level is injected once, so the network must carry
-it through its depth.
-
-The second architecture, implemented but not yet trained, follows DiT
-\cite{peebles2023dit}. A small MLP maps the timestep to a conditioning vector
-$c$, and each block derives a shift $b$, scale $s$ and gate $g$ for each of its
-two sublayers:
-\begin{equation}
-  \mathbf{h}\leftarrow\mathbf{h}+g\odot
-  \mathrm{Sublayer}\big(\mathrm{LN}(\mathbf{h})\odot(1+s)+b\big).
-\end{equation}
-The layers producing $b$, $s$, $g$ are zero-initialised so every block starts
-as the identity. Rotary embeddings replace the learned position table.
-
-\subsection{Training Objective}
-
-For each sequence, $t$ is drawn uniformly, $\xzero$ is corrupted to $\xt$, and
-the cross-entropy to $\xzero$ is averaged over \emph{all} positions, masked or
-visible:
+(linear and square-root schedules are also implemented). The model
+$p_\theta(\xzero\mid\xt,t)$ is a bidirectional transformer that outputs a
+distribution over the vocabulary at every position. In the reference run the
+loss is the cross-entropy to $\xzero$ averaged over \emph{all} positions, with
+$t$ drawn uniformly:
 \begin{equation}
   \mathcal{L}(\theta)=\mathbb{E}\Big[\frac1L\sum_{i=1}^{L}
   -\log p_\theta\big(x_0^{(i)}\mid\xt,t\big)\Big].
 \end{equation}
-This differs from the weighted masked-position ELBO of MDLM, because the model
-is also trained to copy visible tokens. Section~\ref{sec:failures} suggests
-this choice is important.
+This is not MDLM's weighted masked-position ELBO; it also trains the model to
+copy visible tokens, a distinction that matters in Section~\ref{sec:train}.
 
-\subsection{Sampling}
+\subsection{Architectures}
 
-Generation starts from $L$ masked positions, optionally with fixed prompt
-tokens, and runs $N$ steps. At each step the model predicts every position and
-a sampler decides which masked positions to commit.
+The \emph{legacy} architecture produced every reported result. It sums a token
+embedding, a learned position embedding and a projected sinusoidal timestep
+embedding at the input, then applies $N$ pre-LayerNorm encoder blocks and a
+final LayerNorm, with the output layer tied to the embedding. The noise level is
+injected once. The second architecture, implemented but not yet trained,
+follows DiT: a timestep MLP produces a conditioning vector from which every
+block derives a shift, scale and gate for each sublayer, zero-initialised so
+each block starts as the identity, and rotary embeddings replace the position
+table.
 
-The \emph{posterior} sampler is the exact reverse of the corruption. A position
-masked at time $t$ was still masked at an earlier time $t'$ with probability
-$\beta(t')/\beta(t)$. Each masked position therefore stays masked with that
-probability and is otherwise drawn from the model; filled positions never
-change. This sampler is used for all reported samples (32 steps, temperature
-1.0, top-$k$ 40).
+\subsection{Samplers}
 
-The \emph{confidence} sampler follows MaskGIT. It ranks masked positions by the
-model's top probability and commits the highest-ranked ones, using a sampled
-token because the argmax would make all samples identical. The number of
-positions still masked after step $k$ of $N$ is
-$\mathrm{round}\big(n_0\cos(\tfrac{\pi}{2}\tfrac{k+1}{N})\big)$, which
-guarantees a complete sequence after the last step.
+Generation starts from $L$ masked positions (optionally with fixed prompt
+tokens) and runs $N$ steps. The \emph{posterior} sampler is the exact reverse
+of the corruption: a position masked at $t$ was still masked at the earlier
+time $t'$ with probability $\beta(t')/\beta(t)$, so it stays masked with that
+probability and is otherwise drawn from the model. The \emph{confidence}
+sampler ranks masked positions by top probability and commits the highest ones
+with a sampled token, following MaskGIT. All reported samples use the posterior
+sampler with $N{=}32$, temperature 1.0 and top-$k$ 40.
 
-\subsection{Data}
+\subsection{Data and training}
 
-Stories are tokenized, joined with a separator and cut into fixed chunks of 128
-tokens; 0.5\% is held out for validation. The reference run uses
-\texttt{bert-base-uncased}, so all text is lowercase. GPT-2 style BPE
-tokenizers are supported by the code but were not used for training.
-
-\section{Experimental Setup}
-
-All values come from the configuration files and training logs in the
-repository (Table~\ref{tab:setup}).
+Stories are tokenized (\texttt{bert-base-uncased}, hence lowercase), joined
+with a separator, cut into 128-token chunks, and 0.5\% is held out. All values
+below come from the configuration files and logs in the repository
+(Table~\ref{tab:setup}).
 
 \begin{table}[t]
 \centering
@@ -195,40 +154,38 @@ repository (Table~\ref{tab:setup}).
 \toprule
 Hardware & Apple M4 Pro, 24 GB, PyTorch MPS, bf16 autocast \\
 Parameters & 41,175,552 ($d{=}512$, 8 layers, 8 heads, $d_\text{ff}{=}2048$) \\
-Architecture & Legacy: learned positions, timestep added at input \\
-Tokenizer & \texttt{bert-base-uncased}, vocabulary 30,522 \\
-Data & TinyStories train, 2,119,719 stories, $\approx$2.09M chunks (268M tokens) \\
+Data & 2,119,719 stories, $\approx$2.09M chunks (268M tokens) \\
 Diffusion & $T{=}100$, cosine schedule, loss on all positions \\
 Optimizer & AdamW \cite{loshchilov2019adamw}, lr $3{\times}10^{-4}$, $\beta{=}(0.9,0.98)$, weight decay 0.01, clip 1.0 \\
 Batch & $24\times6$ accumulation = 144 sequences ($\approx$18k tokens) \\
 Length & 50,000 micro-batches, 8,333 updates, 154M tokens ($\approx$0.57 epoch) \\
-Time & 3 h 41 min ($\approx$3.8 micro-batches/s) \\
-Sampling & 32 steps, posterior, temperature 1.0, top-$k$ 40 \\
-Seed & 42, single run \\
+Time & 3 h 41 min ($\approx$3.8 micro-batches/s), seed 42, single run \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Results}
+\section{What Trained and What Did Not}
+\label{sec:train}
 
-Fig.~\ref{fig:val} shows the validation score, logged every 2,500
-micro-batches, for the reference run and the two earlier failed runs. Each
-evaluation draws one random $t$ per validation sequence, so points are noisy.
-The reference score falls from 9.2 at step 7,500 to 3.79 at step 45,000, and the
-final training loss is about 1.13 nats per position.
+We trained three models for 50,000 micro-batches each. Two used $T{=}1000$ (22.6M
+parameters with $d{=}384$ and 6 layers, and 41.2M parameters). Both stayed at a
+validation score of 200--217 for the entire run with no downward trend
+(Fig.~\ref{fig:val}), and their samples looked like
+\texttt{to the to they said, a, a to was time play and and\dots}, which is what
+a model that only knows word frequencies writes. The third run used the same
+41.2M network with $T{=}100$ and the loss on all positions. Its score fell
+from about 210 to 9.2 by step 7,500 and kept improving.
 
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=\columnwidth, height=5.6cm,
+  width=\columnwidth, height=5.4cm,
   xlabel={Micro-batch step}, ylabel={Validation score},
-  ymode=log, ymin=2.5, ymax=6000,
-  xmin=0, xmax=52000,
+  ymode=log, ymin=2.5, ymax=6000, xmin=0, xmax=52000,
   xtick={0,10000,20000,30000,40000,50000},
   xticklabels={0,10k,20k,30k,40k,50k}, scaled x ticks=false,
-  grid=major, grid style={gray!25},
-  legend pos=north east,
+  grid=major, grid style={gray!25}, legend pos=north east,
   legend style={font=\tiny, draw=none, fill=white, fill opacity=0.85},
   tick label style={font=\scriptsize}, label style={font=\footnotesize},
 ]
@@ -246,16 +203,33 @@ final training loss is about 1.13 nats per position.
 \addlegendentry{23M, $T{=}1000$}
 \end{axis}
 \end{tikzpicture}
-\caption{Validation score of the three full runs (log scale). Both runs with
-$T{=}1000$ remain near 200 for all 50,000 steps. The score is the exponential
-of the all-position loss; see Section~\ref{sec:metric}.}
+\caption{Validation score of the three runs (log scale). Both $T{=}1000$ runs stay
+near 200 for all 50,000 steps. See Section~\ref{sec:metric} for what the score
+means.}
 \label{fig:val}
 \end{figure}
 
-\subsection{Samples}
+Two things changed between the failed and the successful run, so which one
+mattered is the natural question. We did not run the controlled ablation, but
+two observations narrow it down. First, $T$ is only the resolution of the
+timestep grid: $\beta(t)$ depends on $t/T$, so the corruption distribution
+barely moves when $T$ changes. Averaged over the grid, the mask rate is 0.364
+for $T{=}1000$ and 0.368 for $T{=}100$. The one place $T$ does reach the network
+is the sinusoidal timestep embedding, which sees integers up to $T$ rather than
+a normalised value. Second, a separate 1{,}000-step test of the all-position
+loss reached a score of 144, against about 203 for the earlier loss after the
+same number of steps. Together these make the loss the more likely cause, but
+they do not prove it, and an interaction with the timestep embedding is not
+excluded. A reasonable guess at the mechanism is that copying visible tokens
+supplies an easy early signal that stabilises optimisation; we did not test it.
 
-Unedited samples from the step-45,000 evaluation (first 200 characters,
-32 steps, posterior sampler; lowercase is due to the tokenizer):
+\section{Where Parallel Decoding Goes Wrong}
+\label{sec:sampling}
+
+Table~\ref{tab:setup} gives $L{=}128$ and $N{=}32$, so the average sampler commits
+four tokens per step, each drawn from its own marginal without seeing the others
+committed in the same step. The failures in the samples fit that description:
+
 \begin{lstlisting}
 . once upon a time there was a mouse. the
 rat had very and he once upon a time there
@@ -269,110 +243,116 @@ bunny said. " i need you know. i know, i
 want to help. i can ' t find me, " mia.
 ". but as they ran with the bunny. s...
 \end{lstlisting}
-The model reproduces the corpus register: names, short declarative sentences,
-quoted dialogue and the conventional opening. It also shows the expected
-failure modes of parallel decoding: repeated words (``you you''), contradictory
-neighbouring clauses, and a story restarting midway. No automatic quality score
-or human rating was computed, so this assessment rests on a small number of
-outputs.
 
-\subsection{Interpreting the Validation Score}
+Words are doubled (``you you''), neighbouring clauses contradict each other,
+and the first sample restarts the story mid-text. These are unedited samples
+from the step-45,000 evaluation, truncated to 200 characters.
+
+The average hides how the work is distributed. The posterior sampler walks the
+list \texttt{linspace(T,1,N)} of integer timesteps, and a masked position is
+committed between $t$ and the next $t'$ with probability
+$1-\beta(t')/\beta(t)$. The expected number of tokens committed at a step is
+therefore $L\,[\beta(t_{\text{now}})-\beta(t_{\text{next}})]$, where
+$t_{\text{now}}$ is the earlier step. Because $\beta$ is steepest near $t{=}T$
+and flat near $t{=}0$, the sampler commits the most tokens at the start. For
+our settings the first step commits about 8 tokens in expectation and the
+first four steps together commit about 26, which is 20\% of the sequence,
+while the last four steps commit about 1.6 (Fig.~\ref{fig:commits}). In other
+words, the largest independent bets are placed when almost nothing is known.
+Rounding timesteps to integers also makes the step sizes alternate between 3
+and 4, which shows up as the small bumps in the figure.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\columnwidth, height=4.4cm,
+  xlabel={Denoising step}, ylabel={Expected tokens committed},
+  xmin=0, xmax=33, ymin=0, ymax=9, grid=major, grid style={gray!25},
+  tick label style={font=\scriptsize}, label style={font=\footnotesize},
+]
+\addplot[color=black, mark=*, mark size=1pt, thick] coordinates {
+  (1,8.04) (2,6.01) (3,5.98) (4,5.93) (5,5.88) (6,7.72) (7,5.69) (8,5.59)
+  (9,5.48) (10,5.35) (11,6.92) (12,5.01) (13,4.85) (14,4.68) (15,4.49)
+  (16,5.69) (17,4.02) (18,3.81) (19,3.58) (20,3.35) (21,4.09) (22,2.78)
+  (23,2.53) (24,2.26) (25,2.00) (26,2.24) (27,1.36) (28,1.08) (29,0.80)
+  (30,0.52) (31,0.24) (32,0.02)};
+\end{axis}
+\end{tikzpicture}
+\caption{Expected number of tokens committed per step by the posterior sampler
+($L{=}128$, $N{=}32$, $T{=}100$, cosine schedule), computed from the schedule.
+The mean is 4 but the first steps commit up to twice that.}
+\label{fig:commits}
+\end{figure}
+
+The curve is computed from the schedule, not measured from generations, and
+linking it to the observed repetitions is an inference: we did not compare
+sample quality across schedules. It does suggest a concrete test, which is to
+choose timesteps so that $\beta$ is evenly spaced and every step commits about
+four tokens, or to use the confidence sampler, which ranks positions before
+committing them. That comparison, together with quality against $N$, is the
+first experiment we would run next.
+
+\section{What the Validation Score Measures}
 \label{sec:metric}
 
-The score is not perplexity in the usual sense. It is the exponential of a loss
-averaged over all positions, and on average only 36\% of positions are masked,
-so about two thirds of the terms are near-zero copies. Since
-$\ln 3.793\approx1.333$ nats per position, and masked positions can account for
-at most all of it, the loss per masked token is bounded by
-$1.333/0.363\approx3.67$ nats, a masked-token perplexity of at most about 39.
-This bound was not measured directly. The score is meaningful only for
-comparing runs of this same setup and must not be compared with perplexities
-reported elsewhere.
-
-\section{Analysis of the Failed Runs}
-\label{sec:failures}
-
-The first two runs, with 22.6M parameters ($d{=}384$, 6 layers) and 41.2M
-parameters, both used $T{=}1000$. Each ran 50,000 steps and stayed at a score
-of 200--217 with no downward trend. Their samples resembled
-\texttt{to the to they said, a, a to was time play and and\dots}, which is
-roughly what a model that knows only word frequencies produces.
-
-The third run changed two things simultaneously: the loss moved from masked
-positions to all positions, and $T$ was reduced from 1000 to 100. The score fell
-from about 210 to 9.2 by step 7,500. A separate 1,000-step test of the
-all-position loss reached 144, against about 203 for the earlier loss at the
-same step count, which points to the loss as the main factor. A plausible
-mechanism is that copying visible tokens provides an easy early signal that
-stabilises training, but this was not tested. The controlled comparison
-(all-position loss at $T{=}1000$, or masked-only loss at $T{=}100$) was not run,
-so the attribution remains a hypothesis.
+The score in Fig.~\ref{fig:val} is the exponential of the all-position loss, so
+it is not perplexity. Only 36\% of positions are masked on average, and the
+other two thirds are near-zero copies that dilute the loss. Since
+$\ln 3.793\approx1.333$ nats per position and masked positions can carry at most
+all of it, the loss per masked token is at most $1.333/0.363\approx3.67$ nats,
+which is a masked-token perplexity of at most about 39. We did not measure it
+directly. The score is useful for comparing runs of this exact setup, and it
+should not be compared with perplexities reported elsewhere. The gap between
+3.8 and roughly 39 is the main reason we stress this point: a number that looks
+close to a good language model is not one.
 
 \section{Limitations}
-\label{sec:limitations}
 
-\subsubsection*{Coherence and parallel decoding}
-The model is small, saw about half an epoch, and has no planning mechanism. With
-32 steps over 128 tokens, roughly four tokens are committed per step without
-seeing each other, which accounts for doubled words and clashing neighbours.
-Quality as a function of step count was not measured.
+The model is small and saw about half an epoch, with a fixed window of 128
+learned positions, so stories start and end mid-thought. WordPiece lowercases
+text and decodes with stray spaces (``i can ' t''); a BPE configuration exists
+but is untrained. There are no downstream benchmarks, human ratings,
+repetition or diversity scores, or autoregressive baseline of equal size and
+token budget, so we make no claim about diffusion versus autoregression, nor
+about speed: every pass recomputes full attention without caching and
+generation time was not compared with a baseline. There is one seed and no
+error bars.
 
-\subsubsection*{Window and tokenizer}
-The legacy model has exactly 128 learned positions and training chunks start and
-end at arbitrary points, so generated stories begin and end mid-thought.
-WordPiece lowercases text and decodes with stray spaces (``i can ' t''). A BPE
-configuration exists but is untrained.
-
-\subsubsection*{Implementation defects}
-(i) \texttt{build\_model} in \texttt{src/train.py} does not pass
-\texttt{use\_rope} or \texttt{rotary\_max\_seq\_len}, so a RoPE configuration
-trains the learned-position model while saving a configuration that claims RoPE;
-the reference run is unaffected. (ii) The training loop counts micro-batches
-while the scheduler steps once per optimizer update, so the 2,000 warmup steps
-last 12,000 micro-batches and cosine decay covers only about 13\% of its course
-(final lr $2.89{\times}10^{-4}$ against a peak of $3{\times}10^{-4}$); it was
-left unchanged so results remain reproducible. (iii) A docstring in
-\texttt{diffusion\_loss} describes a weighted masked-position ELBO, whereas the
-function computes the all-position mean.
-
-\subsubsection*{Evaluation}
-There are no downstream benchmarks, human ratings, repetition or diversity
-scores, or autoregressive baseline of equal size and token budget, so no claim
-is made about diffusion versus autoregressive generation. No speed advantage was
-shown: every pass recomputes attention over the full sequence without caching,
-and generation time was not compared with a baseline.
-
-\subsubsection*{Reproducibility}
-The checkpoint was produced by the legacy code at commit \texttt{0eab6d1}; later
-commits changed the model and training script. A single seed was used and there
-are no error bars.
-
-\section{Future Work}
-
-The next steps are to fix the two code defects; run the missing loss-versus-horizon
-ablation; report a masked-token-only loss; train the adaLN and RoPE model with a
-BPE tokenizer under identical seeds; measure quality against the number of
-steps with repetition and distinct-$n$-gram scores; train an autoregressive
-baseline of equal size and tokens; and evaluate remasking samplers and
-unmasking orders that avoid committing conflicting neighbours. A 153M-parameter
-configuration, requiring roughly a day on this hardware, should follow only
-after these.
+We also found three defects in our own code. (i) \texttt{build\_model} in
+\texttt{src/train.py} does not pass \texttt{use\_rope} or
+\texttt{rotary\_max\_seq\_len}, so a RoPE configuration trains the
+learned-position model while saving a config that claims RoPE; the reference run
+is unaffected. (ii) The loop counts micro-batches while the scheduler steps
+once per optimizer update, so 2,000 warmup steps last 12,000 micro-batches and
+cosine decay covers only about 13\% of its course (final lr
+$2.89{\times}10^{-4}$ against a peak of $3{\times}10^{-4}$); we left it so
+results stay reproducible. (iii) A docstring in \texttt{diffusion\_loss}
+describes a weighted masked-position ELBO while the function computes the
+all-position mean. Finally, the checkpoint came from the legacy code at commit
+\texttt{0eab6d1}; later commits changed the model and training script.
 
 \section{Conclusion}
 
-A masked diffusion language model can be trained from scratch on a laptop in
-under four hours and generates text in the style of a children's story. Training
-at this scale proved fragile: two of three runs learned nothing, and the reason
-the third succeeded is only partly understood. The result is a baseline with its
-flaws documented, from which the experiments above can be carried out.
+A masked diffusion language model trains from scratch on a laptop in under four
+hours and writes text in the style of a children's story. Getting there was
+fragile: two of three runs learned nothing, and the evidence favours the loss
+formulation over the number of diffusion steps, without settling it. The
+default sampler front-loads its parallel commitments, a property that is easy to
+overlook because the average looks reasonable, and the validation score we
+tracked overstates quality by about an order of magnitude. The next steps, in
+order, are the missing loss ablation, a masked-token-only loss, quality against
+$N$ under evenly spaced reveal schedules, and an autoregressive baseline of equal
+size and tokens. A 153M-parameter configuration, needing about a day on this
+hardware, should wait for those.
 
 \section*{Availability and License}
 
 The code, configurations, logs and this paper are by Aditya Dutt Pandey and are
 source-available under the license in the repository's \texttt{LICENSE} file;
 all rights are reserved, and reuse, redistribution and presentation as another
-person's work require written permission. The ideas cited here belong to their
-original authors. The commit log records the history of the work.
+person's work require written permission. The commit log records the history of
+the work.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
