@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 from data import build_dataset, get_dataloaders
 from diffusion import diffusion_loss, get_schedule, sample
-from model import DiffusionTransformer
+from model import build_diffusion_model
 
 
 def get_logger(config: dict):
@@ -61,9 +61,12 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def build_model(config: dict, device: torch.device) -> DiffusionTransformer:
+def build_model(config: dict, device: torch.device) -> nn.Module:
     mcfg = config["model"]
-    model = DiffusionTransformer(
+    # Top-level `arch: legacy` rebuilds the original pre-adaLN network, so old
+    # experiments (like checkpoints_fast) can be rerun on the current code.
+    arch = config.get("arch", "adaln")
+    kwargs = dict(
         vocab_size=mcfg["vocab_size"],
         d_model=mcfg["d_model"],
         num_layers=mcfg["num_layers"],
@@ -73,6 +76,12 @@ def build_model(config: dict, device: torch.device) -> DiffusionTransformer:
         dropout=mcfg.get("dropout", 0.1),
         tie_weights=mcfg.get("tie_weights", True),
     )
+    if arch == "adaln":
+        # These two used to be dropped here, so a RoPE config silently trained
+        # the learned-position model while saving a config that said RoPE.
+        kwargs["use_rope"] = mcfg.get("use_rope", False)
+        kwargs["rotary_max_seq_len"] = mcfg.get("rotary_max_seq_len", 2048)
+    model = build_diffusion_model(kwargs, arch=arch)
     model.to(device)
     return model
 
