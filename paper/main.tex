@@ -9,6 +9,7 @@
 \usepackage{listings}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.16}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
 \usepackage[colorlinks=true,linkcolor=black,citecolor=black,urlcolor=black,
             pdftitle={Masked Diffusion Language Modeling at Laptop Scale: What Trains and What Breaks},
             pdfauthor={Aditya Dutt Pandey}]{hyperref}
@@ -16,6 +17,7 @@
 \lstset{basicstyle=\ttfamily\scriptsize, breaklines=true, frame=single,
         columns=fullflexible, keepspaces=true}
 
+\def\mmark{M}
 \newcommand{\mask}{\texttt{[MASK]}}
 \newcommand{\xzero}{\mathbf{x}_0}
 \newcommand{\xt}{\mathbf{x}_t}
@@ -96,6 +98,49 @@ and analysis are.
 
 \section{Model and Setup}
 
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  >=Stealth, node distance=9mm,
+  box/.style={draw, rounded corners=2pt, minimum height=9mm, minimum width=29mm,
+              align=center, font=\footnotesize, fill=gray!8},
+  data/.style={draw, rounded corners=2pt, minimum height=9mm, minimum width=29mm,
+               align=center, font=\footnotesize, fill=blue!7},
+  net/.style={draw, thick, rounded corners=2pt, minimum height=11mm, minimum width=29mm,
+              align=center, font=\footnotesize, fill=orange!16},
+  lab/.style={font=\scriptsize, text=black!70, align=center}]
+% --- training row
+\node[font=\small\bfseries, anchor=west] at (-1.6,1.55) {(a) Training};
+\node[data] (x0) {the cat sat on\\the mat .};
+\node[box, right=of x0] (cor) {replace each token\\by \texttt{[MASK]} w.p.\ $\beta(t)$};
+\node[data, right=of cor] (xt) {the \texttt{[M]} sat \texttt{[M]}\\the mat .};
+\node[net, right=of xt] (n1) {Denoiser\\$p_\theta(\mathbf{x}_0\mid\mathbf{x}_t,t)$};
+\node[box, right=of n1] (ls) {cross-entropy\\against $\mathbf{x}_0$};
+\node[lab, above=3mm of cor] (t1) {$t\sim\mathrm{Uniform}\{1,\dots,T\}$};
+\draw[->] (x0) -- node[lab,above]{$\mathbf{x}_0$} (cor);
+\draw[->] (cor) -- (xt);
+\draw[->] (xt) -- (n1);
+\draw[->] (n1) -- node[lab,above]{logits} (ls);
+\draw[->] (t1.east) -| ([xshift=-2mm]n1.north) ;
+% --- generation row
+\node[font=\small\bfseries, anchor=west] at (-1.6,-1.65) {(b) Generation};
+\node[data, below=26mm of x0] (g0) {\texttt{[M] [M] [M] [M]}\\\texttt{[M] [M] [M]}};
+\node[net, below=26mm of xt] (n2) {Denoiser\\(same weights)};
+\node[box, below=26mm of n1] (cm) {sampler commits some\\masked positions};
+\node[data, below=26mm of ls] (out) {decoded text};
+\draw[->] (g0) -- node[lab,above]{start} (n2);
+\draw[->] (n2) -- node[lab,above]{$p$} (cm);
+\draw[->] (cm) -- node[lab,above]{done} (out);
+\draw[->, rounded corners=3pt] (cm.south) -- ++(0,-6mm) -| node[lab,below,pos=0.25]
+   {repeat for $N$ steps, $t$ from $T$ down to $1$; committed tokens stay fixed} (n2.south);
+\end{tikzpicture}
+\caption{Overview. (a) A clean sequence is corrupted at a random noise level and
+the denoiser learns to restore it. (b) Generation starts from all
+\texttt{[MASK]} and applies the same network repeatedly, committing some
+positions at each step.}
+\label{fig:overview}
+\end{figure*}
+
 \subsection{Corruption and objective}
 
 For a clean sequence $\xzero$ of $L$ tokens and a timestep $t\in\{1,\dots,T\}$,
@@ -126,6 +171,56 @@ follows DiT: a timestep MLP produces a conditioning vector from which every
 block derives a shift, scale and gate for each sublayer, zero-initialised so
 each block starts as the identity, and rotary embeddings replace the position
 table.
+Fig.~\ref{fig:arch} shows the legacy network.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  >=Stealth, node distance=3.6mm,
+  b/.style={draw, rounded corners=1.5pt, minimum height=5.6mm, minimum width=19mm,
+            align=center, font=\scriptsize, fill=gray!8},
+  e/.style={draw, rounded corners=1.5pt, minimum height=5.6mm, minimum width=22mm,
+            align=center, font=\scriptsize, fill=blue!7},
+  p/.style={draw, circle, inner sep=0.8pt, font=\scriptsize}]
+\node[e] (tok) {token embedding};
+\node[e, right=2mm of tok] (pos) {position embedding\\(learned)};
+\node[e, right=2mm of pos] (tim) {timestep: sinusoid\\$\to$ Linear};
+\node[p, below=5mm of pos] (sum) {$+$};
+\node[b, below=of sum] (dr) {dropout};
+\node[b, below=of dr] (ln1) {LayerNorm};
+\node[b, below=of ln1] (att) {bidirectional\\self-attention};
+\node[p, below=of att] (r1) {$+$};
+\node[b, below=of r1] (ln2) {LayerNorm};
+\node[b, below=of ln2] (mlp) {MLP (GELU)};
+\node[p, below=of mlp] (r2) {$+$};
+\node[b, below=6mm of r2] (fn) {final LayerNorm};
+\node[b, below=of fn] (out) {output layer\\(tied to token embedding)};
+\node[e, below=of out] (lg) {logits $(L\times V)$};
+\begin{scope}[on background layer]
+\node[draw, dashed, rounded corners=3pt, fill=orange!8, fit=(ln1)(att)(r1)(ln2)(mlp)(r2),
+      inner sep=3mm, label={[font=\scriptsize]right:$\times N$}] (blk) {};
+\end{scope}
+\draw[->] (tok.south) |- (sum.west);
+\draw[->] (pos.south) -- (sum.north);
+\draw[->] (tim.south) |- (sum.east);
+\draw[->] (sum) -- (dr);
+\draw[->] (dr) -- (ln1);
+\draw[->] (ln1) -- (att);
+\draw[->] (att) -- (r1);
+\draw[->] (r1) -- (ln2);
+\draw[->] (ln2) -- (mlp);
+\draw[->] (mlp) -- (r2);
+\draw[->] (r2) -- (fn);
+\draw[->] (fn) -- (out);
+\draw[->] (out) -- (lg);
+\draw[->, rounded corners=2pt] ([xshift=-4mm]dr.south) -- ++(-9mm,0) |- (r1.west);
+\draw[->, rounded corners=2pt] ([xshift=-4mm]r1.south) -- ++(-9mm,0) |- (r2.west);
+\end{tikzpicture}
+\caption{Legacy denoiser (used for all reported results). The timestep is added
+once at the input; curved paths are residual connections. The adaLN variant
+instead feeds the timestep into every block.}
+\label{fig:arch}
+\end{figure}
 
 \subsection{Samplers}
 
@@ -244,11 +339,40 @@ want to help. i can ' t find me, " mia.
 ". but as they ran with the bunny. s...
 \end{lstlisting}
 
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  x=0.86cm, y=0.55cm,
+  cell/.style={draw, minimum width=0.82cm, minimum height=4.8mm, inner sep=0, font=\scriptsize},
+  m/.style={cell, fill=gray!30},
+  w/.style={cell, fill=blue!12}]
+\foreach \r/\row in {0/{M,M,M,M,M,M,M,M},1/{a,M,M,in,M,M,M,.},
+                     2/{a,mouse,M,in,a,M,house,.},3/{a,mouse,lived,in,a,small,house,.}}{
+  \node[font=\scriptsize, anchor=east] at (0.45,-\r) {$k{=}\r$};
+  \foreach \tok [count=\i] in \row{
+    \ifx\tok\mmark
+      \node[m] at (\i,-\r) {\texttt{[M]}};
+    \else
+      \node[w] at (\i,-\r) {\tok};
+    \fi
+  }
+}
+\draw[->, >=Stealth] (0.6,0.55) -- (8.4,0.55);
+\node[font=\scriptsize] at (4.5,0.95) {position in the sequence};
+\end{tikzpicture}
+\caption{Illustration of parallel unmasking over four steps (hand-made example,
+not model output). Confident, easy positions such as punctuation and function
+words tend to be filled first; tokens committed in the same step are drawn
+independently.}
+\label{fig:reveal}
+\end{figure}
+
 Words are doubled (``you you''), neighbouring clauses contradict each other,
 and the first sample restarts the story mid-text. These are unedited samples
 from the step-45,000 evaluation, truncated to 200 characters.
 
-The average hides how the work is distributed. The posterior sampler walks the
+Fig.~\ref{fig:reveal} sketches the process on a short sequence. The average
+hides how the work is distributed. The posterior sampler walks the
 list \texttt{linspace(T,1,N)} of integer timesteps, and a masked position is
 committed between $t$ and the next $t'$ with probability
 $1-\beta(t')/\beta(t)$. The expected number of tokens committed at a step is
