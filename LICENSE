@@ -1,0 +1,129 @@
+Diffusion-LLM Source-Available License (All Rights Reserved)
+Version 1.0, November 2026
+
+Copyright (c) 2026 Aditya Dutt Pandey (GitHub: Adityaadpandey).
+All rights reserved.
+
+This license is a custom, plain-language licence written for this project. It
+has not been reviewed by a lawyer. If something here really matters (a job, a
+dispute, a commercial deal), get proper legal advice.
+
+
+1. WHAT "THE WORK" MEANS
+
+"The Work" is everything in this repository and everything derived from it:
+the source code, the configuration files, the documentation, the research paper
+in `paper/`, the figures and tables, the training logs, and any model weights or
+checkpoints trained with this code (whether or not they are checked in).
+
+"I", "me" and "the Author" mean Aditya Dutt Pandey.
+
+
+2. WHAT YOU ARE ALLOWED TO DO (NO PERMISSION NEEDED)
+
+a) Read the Work and learn from it.
+b) Run the code unmodified on your own machine for personal study, evaluation,
+   or non-commercial research, as long as you keep every copyright notice and
+   this licence file intact.
+c) Quote short excerpts (a few lines of code or a few sentences of text) in
+   reviews, discussion, criticism, or teaching, with a clear credit and a link
+   back to this repository. Citing the paper is always welcome (see
+   `CITATION.cff`).
+
+
+3. WHAT YOU ARE NOT ALLOWED TO DO (WITHOUT MY WRITTEN PERMISSION)
+
+a) Copy, redistribute, publish, mirror, or re-upload the Work or any
+   substantial part of it, in source or binary form.
+b) Modify the Work, build derivative works from it, or fork it into a project
+   of your own, other than private local edits you make to run option 2(b).
+   Public forks on a code-hosting site are allowed only for the purpose of
+   sending me a contribution (see section 6).
+c) Use the Work, or anything derived from it, for any commercial purpose.
+d) Use the Work to train, fine-tune, benchmark for publication, or build any
+   other model or product, other than the private runs allowed in 2(b).
+e) Remove, hide, or change any copyright notice, author credit, or this
+   licence.
+
+
+4. NO CLAIMING AUTHORSHIP, INCLUDING IN ACADEMIC SETTINGS
+
+The Work was written by the Author. Nobody else may present it, or any part of
+it, as their own work. This applies to everyone, and it is spelled out here on
+purpose because it is the part most often ignored:
+
+a) You may not submit the Work, or a lightly edited, renamed, translated,
+   reformatted or "rewritten" version of it, as your own coursework,
+   dissertation, thesis, project report, publication, patent filing,
+   competition entry, or portfolio piece.
+b) You may not list yourself, your institution, your lab, or your course as
+   the author or owner of the Work.
+c) Supervisors, examiners, reviewers and other people who see the Work
+   during teaching, grading, or review get no ownership rights from that
+   access. Seeing the Work, grading it, or advising on it does not make anyone
+   an author or co-owner. Co-authorship or any shared credit exists only if I
+   agree to it in writing, for that specific item.
+d) Any use under section 2(c) or a written permission under section 7 must
+   credit me as the original author.
+
+If an institution wants to use the Work for teaching, hosting, or archiving, it
+needs my written permission first (section 7).
+
+
+5. WHAT IS *NOT* COVERED BY THIS LICENCE
+
+This licence covers my own original expression: the code I wrote, my text, my
+configurations, my figures, and my trained weights. It does not claim anything
+that belongs to somebody else:
+
+- The ideas and algorithms in the cited papers (masked diffusion, MDLM, D3PM,
+  MaskGIT, LLaDA, DiT's adaLN-Zero, RoPE and so on) belong to their authors and
+  are credited in the paper and the README. Nothing here claims to have
+  invented them.
+- Third-party libraries (PyTorch, Hugging Face `transformers` and `datasets`,
+  `safetensors`, NumPy, etc.) keep their own licences.
+- The TinyStories dataset and the pretrained tokenizers (`bert-base-uncased`,
+  GPT-2) are downloaded from their original sources and keep their own terms.
+  They are not part of this repository.
+
+
+6. CONTRIBUTIONS
+
+If you send me a patch, issue, or pull request, you keep the credit for what
+you wrote, and you give me a perpetual, worldwide, royalty-free, irrevocable
+licence to use, change, and distribute it as part of the Work, under any
+licence I choose. Do not send anything you do not have the right to share.
+
+
+7. HOW TO GET PERMISSION
+
+To do anything section 3 forbids, ask me first and get the answer in writing
+(an email or a signed note is enough). Permission is for the specific thing I
+agree to, it is not transferable, and I can set conditions such as credit
+lines or non-commercial use only. Silence is never permission.
+
+Contact: open an issue on the GitHub repository, or use the contact details
+listed on my GitHub profile (github.com/Adityaadpandey).
+
+
+8. TERMINATION
+
+If you break any of these terms, your permissions under this licence end
+automatically. To get them back you need my written agreement.
+
+
+9. NO WARRANTY, NO LIABILITY
+
+The Work is provided "as is", with no warranty of any kind, express or implied,
+including fitness for a particular purpose or non-infringement. It is a
+learning project and the README says openly that it has known bugs and weak
+results. To the extent the law allows, I am not liable for any damage or loss
+from using it.
+
+
+10. GENERAL
+
+If any part of this licence is held unenforceable, the rest stays in force.
+This licence is the only licence that applies to the Work unless I grant
+another in writing. Nothing here limits any right you have by law that cannot
+be waived, such as fair use or fair dealing for quotation and criticism.
