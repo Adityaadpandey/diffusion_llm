@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use or refer to this work, please cite it as below. Reuse is restricted by LICENSE."
+title: "Masked Diffusion Language Modeling on a Single Laptop: A Case Study on TinyStories"
+type: software
+authors:
+  - family-names: "Pandey"
+    given-names: "Aditya Dutt"
+    alias: "Adityaadpandey"
+repository-code: "https://github.com/Adityaadpandey/diffusion_llm"
+version: "0.1.0"
+date-released: "2026-11-25"
+license: "LicenseRef-Diffusion-LLM-Source-Available"
+keywords:
+  - masked diffusion
+  - language model
+  - TinyStories
+  - discrete diffusion

@@ -419,3 +419,9 @@ src/evaluate.py     Validation score for a checkpoint
 - Nie et al., 2025. *Large Language Diffusion Models* (LLaDA)
 - Peebles & Xie, 2023. *Scalable Diffusion Models with Transformers* (DiT, adaLN-Zero)
 - Su et al., 2021. *RoFormer: Enhanced Transformer with Rotary Position Embedding* (RoPE)
+
+---
+
+## License and authorship
+
+Copyright (c) 2026 Aditya Dutt Pandey. All rights reserved. The code is source-available, not open source: you can read it and run it unmodified for personal study, but you cannot redistribute it, build on it, use it commercially, or present it as your own work (including as coursework or a thesis). See [LICENSE](LICENSE) for the full terms. To cite it, use [CITATION.cff](CITATION.cff) or the paper in [`paper/`](paper/main.tex).
