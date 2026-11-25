@@ -271,10 +271,16 @@ def train(config: dict, resume_from: str | None = None) -> None:
         eps=1e-8,
         weight_decay=tcfg["weight_decay"],
     )
+    # `step` in the loop counts micro-batches but the scheduler ticks once per
+    # optimizer update, so convert both lengths to updates. Without this, a
+    # 2000-step warmup quietly lasted 2000 * grad_accum micro-batches and the
+    # cosine decay barely moved. `lr_schedule_steps` lets a short run follow the
+    # lr curve of a longer one (e.g. to compare with an older, longer run).
+    accum = tcfg["gradient_accumulation_steps"]
     scheduler = get_linear_warmup_cosine_decay(
         optimizer,
-        tcfg["warmup_steps"],
-        tcfg["max_steps"],
+        tcfg["warmup_steps"] // accum,
+        tcfg.get("lr_schedule_steps", tcfg["max_steps"]) // accum,
     )
 
     # EMA weights (used for evaluation/sampling) and optional wandb logging.
