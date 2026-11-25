@@ -296,9 +296,11 @@ first experiment we would run next.
 \section{What the Validation Score Measures}
 \label{sec:metric}
 
-The score in Fig.~\ref{fig:val} is the exponential of the all-position loss, so
-it is not perplexity. Only 36\% of positions are masked on average, and the
-other two thirds are near-zero copies that dilute the loss. Since
+The score in Fig.~\ref{fig:val} is the exponential of the all-position loss
+(averaged over validation batches, each weighted by its mean masked count,
+which varies little between batches), so it is not perplexity. Only 36\% of
+positions are masked on average, and the other two thirds are near-zero copies
+that dilute the loss. Since
 $\ln 3.793\approx1.333$ nats per position and masked positions can carry at most
 all of it, the loss per masked token is at most $1.333/0.363\approx3.67$ nats,
 which is a masked-token perplexity of at most about 39. We did not measure it
@@ -319,18 +321,22 @@ about speed: every pass recomputes full attention without caching and
 generation time was not compared with a baseline. There is one seed and no
 error bars.
 
-We also found three defects in our own code. (i) \texttt{build\_model} in
-\texttt{src/train.py} does not pass \texttt{use\_rope} or
-\texttt{rotary\_max\_seq\_len}, so a RoPE configuration trains the
-learned-position model while saving a config that claims RoPE; the reference run
-is unaffected. (ii) The loop counts micro-batches while the scheduler steps
-once per optimizer update, so 2,000 warmup steps last 12,000 micro-batches and
-cosine decay covers only about 13\% of its course (final lr
-$2.89{\times}10^{-4}$ against a peak of $3{\times}10^{-4}$); we left it so
-results stay reproducible. (iii) A docstring in \texttt{diffusion\_loss}
-describes a weighted masked-position ELBO while the function computes the
-all-position mean. Finally, the checkpoint came from the legacy code at commit
-\texttt{0eab6d1}; later commits changed the model and training script.
+We also found three defects in our own code, all fixed in later commits and
+none affecting the architecture of the reference run. (i) \texttt{build\_model}
+did not pass \texttt{use\_rope} or \texttt{rotary\_max\_seq\_len}, so a RoPE
+configuration trained the learned-position model while saving a config that
+claimed RoPE. (ii) The loop counts micro-batches while the scheduler steps once
+per optimizer update, so 2,000 warmup steps lasted 12,000 micro-batches and
+cosine decay covered only about 13\% of its course (final lr
+$2.89{\times}10^{-4}$ against a peak of $3{\times}10^{-4}$). The reference run
+\emph{was} trained with this schedule, so its results reflect the defect.
+(iii) A docstring in \texttt{diffusion\_loss} described a weighted
+masked-position ELBO while the function computes the all-position mean. The
+checkpoint came from the legacy code at commit \texttt{0eab6d1}, and the exact
+loss of the two failed runs is not preserved in the repository history, since
+the first commit already contains the all-position loss. A rerun of the failed
+setting therefore tests the natural alternative, a mean over masked positions
+only, rather than replaying those runs exactly.
 
 \section{Conclusion}
 
@@ -340,11 +346,17 @@ fragile: two of three runs learned nothing, and the evidence favours the loss
 formulation over the number of diffusion steps, without settling it. The
 default sampler front-loads its parallel commitments, a property that is easy to
 overlook because the average looks reasonable, and the validation score we
-tracked overstates quality by about an order of magnitude. The next steps, in
-order, are the missing loss ablation, a masked-token-only loss, quality against
-$N$ under evenly spaced reveal schedules, and an autoregressive baseline of equal
-size and tokens. A 153M-parameter configuration, needing about a day on this
-hardware, should wait for those.
+tracked overstates quality by about an order of magnitude. The code for the next
+experiments is already in the repository but has not been run: a masked-only
+loss ablation at $T{=}100$ with the same network and learning-rate curve, a
+rerun of the reference recipe on the current code as a control, an
+autoregressive baseline of equal size and token budget, and an evenly spaced
+reveal schedule (\texttt{timestep\_mode: even\_beta}). Together they would test
+the loss hypothesis, the sampler hypothesis and the comparison with
+autoregressive models, and each needs about an hour of laptop training at
+15,000 micro-batches. Until they are run, the claims above stay hypotheses. A
+153M-parameter configuration, needing about a day on this hardware, should
+wait for those.
 
 \section*{Availability and License}
 
